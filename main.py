@@ -2,6 +2,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from pandas.errors import ParserError
 from pandastable import Table, TableModel
+from dbmanager import DBManager
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -13,22 +14,16 @@ import tkinter as tk
 import tkinter.font as tkfont
 import tkinter.messagebox as tkMessageBox
 import tkinter.filedialog as tkFileDialog
+import tkinter.simpledialog as tkSimpleDialog
 
 
 matplotlib.use("TkAgg")
 
 
-class DataStore(object):
-    host = "localhost"
-    user="root"
-    passwd = "2ZombiesEatBrains?"
-    data = pd.DataFrame()
-
-
 class Application (tk.Tk):
     def __init__(self):
         tk.Tk.__init__(self)
-        DataStore.data = get_db_data()
+        DBManager.store_data("db_data", get_db_data())
 
         self.fonts = {
             "title": tkfont.Font(family="Lucida Grande", size=24)
@@ -130,7 +125,7 @@ class DataFrame(tk.Frame):
         self.table_container = tk.Frame(self)
         self.table_container.grid(row=1, column=0, sticky="NSEW")
         # Create table to display data
-        data_df = DataStore.data
+        data_df = DBManager.retrieve_data("db_data")
 
         self.data_table = Table(self.table_container, dataframe=data_df)
         self.data_table.autoResizeColumns()
@@ -146,7 +141,7 @@ class DataFrame(tk.Frame):
 
         data_df = get_db_data()
 
-        DataStore.data = data_df
+        DBManager.store_data("db_data", data_df)
         self.data_table.updateModel(TableModel(data_df))
         self.data_table.redraw()
 
@@ -158,7 +153,7 @@ class DataFrame(tk.Frame):
             return
 
     def save_to_db(self):
-        add_df_to_db(DataStore.data)
+        add_df_to_db(DBManager.retrieve_data("db_data"))
 
     def import_csv(self):
         # Get file to import
@@ -176,11 +171,13 @@ class DataFrame(tk.Frame):
 
         if len(import_df) > 0:
             # Data was loaded.
-            DataStore.data.reset_index(level=["id_product"], inplace=True)
-            table_df = DataStore.data.append(import_df, ignore_index=False)
+            DBManager.retrieve_data("db_data").reset_index(
+                level=["id_product"], inplace=True)
+            table_df = DBManager.retrieve_data(
+                "db_data").append(import_df, ignore_index=False)
             table_df.set_index("id_product", inplace=True)
 
-            DataStore.data = table_df
+            DBManager.store_data("db_data", table_df)
             self.data_table.updateModel(TableModel(table_df))
             self.data_table.redraw()
 
@@ -201,11 +198,13 @@ class StatsFrame(tk.Frame):
         self.columnconfigure(index=0, weight=1)
 
         f = self.get_plot_data()
-        self.plt_show(f)
+        if f:
+            self.plt_show(f)
 
     def show(self):
         f = self.get_plot_data()
-        self.plt_show(f)
+        if f:
+            self.plt_show(f)
 
         self.tkraise()
 
@@ -223,8 +222,11 @@ class StatsFrame(tk.Frame):
 
     def get_plot_data(self):
         # Get a data from DB and import into pandas.DataFrame
-        DataStore.data = get_db_data()
-        products_df = DataStore.data
+        products_df = get_db_data()
+        DBManager.store_data("db_data", products_df)
+
+        if len(products_df) == 0:
+            return None
 
         # Create the matplotlib figure and axes that will be used to display the graphs for the statistics.
         fig = Figure(figsize=(15, 5), dpi=100)
@@ -236,12 +238,15 @@ class StatsFrame(tk.Frame):
         fig.subplots_adjust(bottom=.25)
 
         # Create different statistics and plot them the figure previously defined.
-        products_df.groupby(["category"]).size().plot(ax=ax1, y="stock_available", kind="bar", grid=True,
-                                                      title="Number of Items per Category")
-        products_df.groupby(["category"]).sum().plot(ax=ax2, y="stock_available", kind="bar", grid=True,
-                                                     title="Total Number of Products per Category")
-        products_df.groupby(["category"]).mean().plot(ax=ax3, y="stock_available", kind="bar", grid=True,
-                                                      title="Average Price of Products in Category")
+        # .plot(ax=ax1, y="stock_available", kind="bar", grid=True,
+        products_df.groupby(["id_category"]).size()
+        #  title="Number of Items per Category")
+        # .plot(ax=ax2, y="stock_available", kind="bar", grid=True,
+        products_df.groupby(["id_category"]).sum()
+        # title="Total Number of Products per Category")
+        # .plot(ax=ax3, y="stock_available", kind="bar", grid=True,
+        products_df.groupby(["id_category"]).mean()
+        #  title="Average Price of Products in Category")
 
         return fig
 
@@ -249,27 +254,14 @@ class StatsFrame(tk.Frame):
 def get_db_data():
     """ Method to get the data from the database and return it as a tuple consisting
     of a list of the names of the columns and a list of the actualy data in tuple format."""
-    con = MySQLdb.connect(host=DataStore.host, user=DataStore.user,
-                          passwd=DataStore.passwd, database="sprint_datavault")
-    cursor = con.cursor()
+    with DBManager.open_connection() as con:
+        cursor = con.cursor()
 
-    cols = [
-        "id_product", "name", "category", "stock_available", "selling_price"
-    ]
+        cols = DBManager.get_table_cols("products")
 
-    # Create the table if it doesn't already exist. This will allow it to work in any DB.
-    cursor.execute("""CREATE TABLE IF NOT EXISTS `products` (
-        id_product VARCHAR(12) NOT NULL PRIMARY KEY,
-        name VARCHAR(60) NOT NULL,
-        category VARCHAR(60) NOT NULL,
-        stock_available INT UNSIGNED NOT NULL DEFAULT 0,
-        selling_price DECIMAL(13,2) UNSIGNED NOT NULL DEFAULT 0.00
-    ) ENGINE=InnoDB""")
-
-    cursor.execute(
-        f"SELECT {','.join(cols)} FROM products")
-    data = cursor.fetchall()
-    con.close()
+        cursor.execute(
+            f"SELECT {','.join(cols)} FROM products")
+        data = cursor.fetchall()
 
     data_df = pd.DataFrame(data, columns=cols).set_index(
         "id_product")
@@ -277,45 +269,55 @@ def get_db_data():
 
 
 def add_df_to_db(df):
-    con = MySQLdb.connect(host=DataStore.host, user=DataStore.user,
-                          passwd=DataStore.passwd, database="sprint_datavault")
-    cursor = con.cursor()
+    with DBManager.open_connection() as con:
+        cursor = con.cursor()
 
-    # Firstly, get original dataframe, using get_db_data()
-    left_df = get_db_data()
+        # Firstly, get original dataframe, using get_db_data()
+        left_df = get_db_data()
 
-    # Then, compare the the two and only take the ones that have differences
-    out_df = left_df.merge(df, how="outer", indicator="shared")
-    out_df = out_df[out_df["shared"] != "both"]
+        # Then, compare the the two and only take the ones that have differences
+        out_df = left_df.merge(df, how="outer", indicator="shared")
+        out_df.reset_index(level=["id_product"], inplace=True)
 
-    out_df.drop(["shared"], axis=1, inplace=True)
-    # out_df.reset_index(level=0, inplace=True)
-    out_df["id_product"] = out_df.index
+        data_insert = out_df[out_df["shared" == "right_only"]]
+        data_delete = out_df[out_df["shared" == "left_only"]]
 
-    return
+        out_df.drop(["shared"], axis=1, inplace=True)
 
-    if len(out_df) == 0:
-        tkMessageBox.showinfo(title="DataBase Update Complete",
-                              message="Nothing was added to the DB as no changes were detected between the different datasets.")
-        return
+        return  # TODO: Remove after testing.
 
-    cols = "`,`".join([str(i) for i in out_df.columns.tolist()])
-    for _, row in out_df.iterrows():
-    sql = "INSERT INTO `products` (`" + cols + \
-        "`) VALUES (" + "%s," * (len(row)-1) + "%s)"
+        if len(out_df) == 0:
+            tkMessageBox.showinfo(title="DataBase Update Complete",
+                                  message="Nothing was added to the DB as no changes were detected between the different datasets.")
+            return
 
-    try:
-        cursor.executemany(sql, tuple(map(out_df.iterrows())))
-        con.commit()
-        tkMessageBox.showinfo(title="Save Successful",
-                                message="Save Completed Successfully!")
-    except:
-        con.rollback()
-        tkMessageBox.showerror(title="Save Failed",
-                                message="The data was not saved to the DB.")
+        cols = "`,`".join([str(i) for i in out_df.columns.tolist()])
+
+        sql_insert = ("INSERT INTO `products` (`" + cols +
+                      "`) VALUES (" + "%s," * (len(cols)-1) + "%s)")
+        sql_delete = "DELETE FROM `products` WHERE id_product=%s"
+
+        try:
+            if len(data_insert) > 0:
+                cursor.execute(sql_insert, data_insert)
+            if len(data_delete) > 0:
+                cursor.execute(sql_delete, data_delete)
+            con.commit()
+            tkMessageBox.showinfo(title="Save Successful",
+                                  message="Save Completed Successfully!")
+        except:
+            con.rollback()
+            tkMessageBox.showerror(title="Save Failed",
+                                   message="The data was not saved to the DB.")
 
     con.close()
 
 
-app = Application()
-app.mainloop()
+if __name__ == "__main__":
+    data = {
+        "db_data": pd.DataFrame()
+    }
+
+    DBManager.init(data=data, passwd="2ZombiesEatBrains?", db="practice")
+    app = Application()
+    app.mainloop()
