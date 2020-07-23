@@ -8,6 +8,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import math
 import MySQLdb
+import numpy as np
 import os.path
 import pandas as pd
 import tkinter as tk
@@ -23,7 +24,7 @@ matplotlib.use("TkAgg")
 class Application (tk.Tk):
     def __init__(self):
         tk.Tk.__init__(self)
-        DBManager.store_data("db_data", get_db_data())
+        DBManager.store_data("products_data", DBManager.get_dbdata())
 
         self.fonts = {
             "title": tkfont.Font(family="Lucida Grande", size=24)
@@ -34,6 +35,7 @@ class Application (tk.Tk):
             StatsFrame
         ]
         self.create_widgets()
+        self.visible_idx = -1
         self.set_tab(0)
 
     def create_widgets(self):
@@ -80,12 +82,13 @@ class Application (tk.Tk):
             self.tabs[idx].grid(row=0, column=0, sticky="NSEW")
 
     def set_tab(self, frame_idx):
-        for idx, _ in enumerate(self.tab_buttons):
-            if idx == frame_idx:
-                self.tab_buttons[idx]["state"] = "disabled"
-                self.tabs[idx].show()
-            else:
-                self.tab_buttons[idx]["state"] = "normal"
+        if self.tabs[frame_idx].show():
+            self.visible_idx = frame_idx
+            for idx, _ in enumerate(self.tab_buttons):
+                if idx == frame_idx:
+                    self.tab_buttons[idx]["state"] = "disabled"
+                else:
+                    self.tab_buttons[idx]["state"] = "normal"
 
 
 class DataFrame(tk.Frame):
@@ -100,6 +103,7 @@ class DataFrame(tk.Frame):
 
     def show(self):
         self.tkraise()
+        return True
 
     def create_widgets(self):
         # Create buttons to manage the DB.
@@ -108,6 +112,8 @@ class DataFrame(tk.Frame):
         for col in range(12):
             self.toolbar.columnconfigure(index=col, weight=1)
 
+        self.addrow_button = tk.Button(
+            self.toolbar, text="Add Row to End", command=self.add_row_to_table)
         self.save_button = tk.Button(
             self.toolbar, text="Save Data To DB", command=self.save_to_db)
         self.export_button = tk.Button(
@@ -121,15 +127,21 @@ class DataFrame(tk.Frame):
         self.export_button.grid(row=0, column=11)
         self.import_button.grid(row=0, column=10)
         self.refresh_button.grid(row=0, column=9)
+        self.addrow_button.grid(row=0, column=8)
 
         self.table_container = tk.Frame(self)
         self.table_container.grid(row=1, column=0, sticky="NSEW")
         # Create table to display data
-        data_df = DBManager.retrieve_data("db_data")
+        data_df = DBManager.retrieve_data("products_data")
 
-        self.data_table = Table(self.table_container, dataframe=data_df)
-        self.data_table.autoResizeColumns()
+        self.data_table = Table(self.table_container, TableModel(data_df))
+        # self.data_table.autoResizeColumns()
         self.data_table.show()
+
+    def add_row_to_table(self):
+        num_rows = self.data_table.rows
+        self.data_table.setSelectedRow(num_rows)
+        self.data_table.addRow()
 
     def refresh_table_data(self):
         res = tkMessageBox.askyesno(title="Are you sure you want to refresh the DB.",
@@ -139,46 +151,80 @@ class DataFrame(tk.Frame):
         if res == tkMessageBox.NO:
             return
 
-        data_df = get_db_data()
+        data_df = DBManager.get_dbdata()
 
-        DBManager.store_data("db_data", data_df)
+        DBManager.store_data("products_data", data_df)
         self.data_table.updateModel(TableModel(data_df))
         self.data_table.redraw()
 
     def export_data(self):
-        output_file = tkFileDialog.askopenfilename()
-        if not output_file:
-            tkMessageBox.showerror(title="Export Failed",
-                                   message="Export failed as no file was selected.")
-            return
+        self.data_table.doExport()
 
     def save_to_db(self):
-        add_df_to_db(DBManager.retrieve_data("db_data"))
+        if DBManager.isdataset("categories_data"):
+            DBManager.add_df_to_db(DBManager.retrieve_data(
+                "categories_data"), table="categories", suppress="success")
 
-    def import_csv(self):
+        categories_df = DBManager.get_dbdata("categories")
+        DBManager.store_data("categories_data", categories_df)
+
+        products_df = DBManager.retrieve_data("products_data")
+        if not "id_category" in products_df:
+            products_df["id_category"] = ""
+        for idx, row in products_df.iterrows():
+            if pd.isna(row.loc["id_category"]) and (row["category"]):
+                mask = categories_df["title"].values == row["category"]
+
+                if not categories_df[mask].empty:
+                    value = categories_df[mask].iloc[0]["id_category"]
+                    products_df.at[idx, "id_category"] = value
+        if "category" in products_df:
+            products_df.drop(columns=["category"], inplace=True)
+
+        DBManager.add_df_to_db(products_df)
+
+    def import_csv(self, file=""):
         # Get file to import
-        input_file = tkFileDialog.askopenfilename()
-        if not input_file.strip():
-            tkMessageBox.showerror(title="Import Failed",
-                                   message="Import failed as no file was selected.")
-            return
+        if file:
+            input_file = file
+        else:
+            input_file = tkFileDialog.askopenfilename()
+            if not input_file.strip():
+                tkMessageBox.showerror(title="Import Failed",
+                                       message="Import failed as no file was selected.")
+                return
 
         try:
             import_df = pd.read_csv(input_file)
         except ParserError:
             tkMessageBox.showerror(
-                "The supplied file is not a valid CSV file, could not import.")
+                message="The supplied file is not a valid CSV file, could not import.")
 
         if len(import_df) > 0:
             # Data was loaded.
-            DBManager.retrieve_data("db_data").reset_index(
-                level=["id_product"], inplace=True)
-            table_df = DBManager.retrieve_data(
-                "db_data").append(import_df, ignore_index=False)
-            table_df.set_index("id_product", inplace=True)
+            if DBManager.isdataset("categories_data"):
+                catdf = DBManager.retrieve_data("categories_data")
+            else:
+                catdf = DBManager.get_dbdata("categories")
 
-            DBManager.store_data("db_data", table_df)
+            unknown_cats = import_df[~import_df["category"].isin(
+                catdf["title"])]["category"].to_frame().drop_duplicates()
+
+            unknown_cats.rename(columns={"category": "title"}, inplace=True)
+
+            if not unknown_cats.empty:
+                unknown_cats["id_category"] = np.nan
+
+                catdf = catdf.append(unknown_cats)
+                catdf["id_category"]
+                DBManager.store_data("categories_data", catdf)
+
+            table_df = DBManager.retrieve_data("products_data")
+            table_df = table_df.append(import_df, ignore_index=False)
+
+            DBManager.store_data("products_data", table_df)
             self.data_table.updateModel(TableModel(table_df))
+            self.data_table.columnwidths["id_product"] = 5
             self.data_table.redraw()
 
             tkMessageBox.showinfo(title="Import Successful",
@@ -204,26 +250,35 @@ class StatsFrame(tk.Frame):
     def show(self):
         f = self.get_plot_data()
         if f:
-            self.plt_show(f)
+            self.plt_redraw(f)
+            self.tkraise()
+            return True
 
-        self.tkraise()
+        tkMessageBox.showinfo(title="No Data",
+                              message="There are no statistics because there is no data loaded. Load data to view statistics tab.")
+        return False
 
     def plt_show(self, f):
         """Method to add the matplotlib graph onto a tkinter window."""
+        canvas = self.plt_redraw(f)
+
+        self.plot_widget = canvas.get_tk_widget()
+        self.plot_widget.grid(row=0, column=0, sticky="NSEW")
+
+    def plt_redraw(self, f):
         canvas = FigureCanvasTkAgg(f, self)
         canvas.draw()
 
         for ax in f.get_axes():
             for tick in ax.get_xticklabels():
                 tick.set_rotation(35)
-
-        self.plot_widget = canvas.get_tk_widget()
-        self.plot_widget.grid(row=0, column=0, sticky="NSEW")
+        return canvas
 
     def get_plot_data(self):
-        # Get a data from DB and import into pandas.DataFrame
-        products_df = get_db_data()
-        DBManager.store_data("db_data", products_df)
+        # Get a data from datastore and import into pandas.DataFrame
+        # products_df = DBManager.get_dbdata()
+        # DBManager.store_data("products_data", products_df)
+        products_df = DBManager.retrieve_data("products_data")
 
         if len(products_df) == 0:
             return None
@@ -238,79 +293,19 @@ class StatsFrame(tk.Frame):
         fig.subplots_adjust(bottom=.25)
 
         # Create different statistics and plot them the figure previously defined.
-        # .plot(ax=ax1, y="stock_available", kind="bar", grid=True,
-        products_df.groupby(["id_category"]).size()
-        #  title="Number of Items per Category")
-        # .plot(ax=ax2, y="stock_available", kind="bar", grid=True,
-        products_df.groupby(["id_category"]).sum()
-        # title="Total Number of Products per Category")
-        # .plot(ax=ax3, y="stock_available", kind="bar", grid=True,
-        products_df.groupby(["id_category"]).mean()
-        #  title="Average Price of Products in Category")
+        products_df.groupby(["id_category"]).size().plot(ax=ax1, y="stock_available", kind="bar", grid=True,
+                                                         title="Number of Items per Category")
+        products_df.groupby(["id_category"]).sum().plot(ax=ax2, y="stock_available", kind="bar", grid=True,
+                                                        title="Total Number of Products per Category")
+        products_df.groupby(["id_category"]).mean().plot(ax=ax3, y="stock_available", kind="bar", grid=True,
+                                                         title="Average Price of Products in Category")
 
         return fig
 
 
-def get_db_data():
-    """ Method to get the data from the database and return it as a tuple consisting
-    of a list of the names of the columns and a list of the actualy data in tuple format."""
-    with DBManager.open_connection() as con:
-        cursor = con.cursor()
-
-        cols = DBManager.get_table_cols("products")
-
-        cursor.execute(
-            f"SELECT {','.join(cols)} FROM products")
-        data = cursor.fetchall()
-
-    data_df = pd.DataFrame(data, columns=cols).set_index(
-        "id_product")
-    return data_df
-
-
-def add_df_to_db(df):
-    with DBManager.open_connection() as con:
-        cursor = con.cursor()
-
-        # Firstly, get original dataframe, using get_db_data()
-        left_df = get_db_data()
-
-        # Then, compare the the two and only take the ones that have differences
-        out_df = left_df.merge(df, how="outer", indicator="shared")
-        out_df.reset_index(level=["id_product"], inplace=True)
-
-        data_insert = out_df[out_df["shared" == "right_only"]]
-        data_delete = out_df[out_df["shared" == "left_only"]]
-
-        out_df.drop(["shared"], axis=1, inplace=True)
-
-        return  # TODO: Remove after testing.
-
-        if len(out_df) == 0:
-            tkMessageBox.showinfo(title="DataBase Update Complete",
-                                  message="Nothing was added to the DB as no changes were detected between the different datasets.")
-            return
-
-        cols = "`,`".join([str(i) for i in out_df.columns.tolist()])
-
-        sql_insert = ("INSERT INTO `products` (`" + cols +
-                      "`) VALUES (" + "%s," * (len(cols)-1) + "%s)")
-        sql_delete = "DELETE FROM `products` WHERE id_product=%s"
-
-        try:
-            if len(data_insert) > 0:
-                cursor.execute(sql_insert, data_insert)
-            if len(data_delete) > 0:
-                cursor.execute(sql_delete, data_delete)
-            con.commit()
-            tkMessageBox.showinfo(title="Save Successful",
-                                  message="Save Completed Successfully!")
-        except:
-            con.rollback()
-            tkMessageBox.showerror(title="Save Failed",
-                                   message="The data was not saved to the DB.")
-
-    con.close()
+def merge_dfs(df1, df2, how="outer"):
+    """ Forgot to make docstring, so don't know what the purpose of this functions is... """
+    out_df = pd.merge(df1, df2, how=how, indicator="shared")
 
 
 if __name__ == "__main__":
@@ -318,6 +313,8 @@ if __name__ == "__main__":
         "db_data": pd.DataFrame()
     }
 
-    DBManager.init(data=data, passwd="2ZombiesEatBrains?", db="practice")
+    DBManager.init(data=data, passwd="2ZombiesEatBrains?",
+                   db="practice", table="products")
     app = Application()
     app.mainloop()
+    # import test
