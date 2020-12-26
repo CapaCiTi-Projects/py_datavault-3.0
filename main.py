@@ -89,6 +89,7 @@ class Application (tk.Tk):
                     self.tab_buttons[idx]["state"] = "disabled"
                 else:
                     self.tab_buttons[idx]["state"] = "normal"
+                    self.tabs[idx].hide()
 
 
 class DataFrame(tk.Frame):
@@ -104,6 +105,9 @@ class DataFrame(tk.Frame):
     def show(self):
         self.tkraise()
         return True
+
+    def hide(self):
+        DBManager.store_data("products_data", self.data_table.model.df)
 
     def create_widgets(self):
         # Create buttons to manage the DB.
@@ -143,13 +147,14 @@ class DataFrame(tk.Frame):
         self.data_table.setSelectedRow(num_rows)
         self.data_table.addRow()
 
-    def refresh_table_data(self):
-        res = tkMessageBox.askyesno(title="Are you sure you want to refresh the DB.",
-                                    message="Are you sure that you want to refresh the DB.\n"
-                                    "This will undo any changes that you made before saving your data. This includes CSV file that you have imported")
+    def refresh_table_data(self, suppress_warning=False):
+        if not suppress_warning:
+            res = tkMessageBox.askyesno(title="Are you sure you want to refresh the DB.",
+                                        message="Are you sure that you want to refresh the DB.\n"
+                                        "This will undo any changes that you made before saving your data. This includes CSV file that you have imported")
 
-        if res == tkMessageBox.NO:
-            return
+            if res == tkMessageBox.NO:
+                return
 
         data_df = DBManager.get_dbdata()
 
@@ -161,6 +166,8 @@ class DataFrame(tk.Frame):
         self.data_table.doExport()
 
     def save_to_db(self):
+        products_df = self.data_table.model.df
+        update_categories(products_df)
         if DBManager.isdataset("categories_data"):
             DBManager.add_df_to_db(DBManager.retrieve_data(
                 "categories_data"), table="categories", suppress="success")
@@ -168,7 +175,6 @@ class DataFrame(tk.Frame):
         categories_df = DBManager.get_dbdata("categories")
         DBManager.store_data("categories_data", categories_df)
 
-        products_df = DBManager.retrieve_data("products_data")
         if not "id_category" in products_df:
             products_df["id_category"] = ""
         for idx, row in products_df.iterrows():
@@ -182,6 +188,7 @@ class DataFrame(tk.Frame):
             products_df.drop(columns=["category"], inplace=True)
 
         DBManager.add_df_to_db(products_df)
+        self.refresh_table_data(suppress_warning=True)
 
     def import_csv(self, file=""):
         # Get file to import
@@ -202,23 +209,6 @@ class DataFrame(tk.Frame):
 
         if len(import_df) > 0:
             # Data was loaded.
-            if DBManager.isdataset("categories_data"):
-                catdf = DBManager.retrieve_data("categories_data")
-            else:
-                catdf = DBManager.get_dbdata("categories")
-
-            unknown_cats = import_df[~import_df["category"].isin(
-                catdf["title"])]["category"].to_frame().drop_duplicates()
-
-            unknown_cats.rename(columns={"category": "title"}, inplace=True)
-
-            if not unknown_cats.empty:
-                unknown_cats["id_category"] = np.nan
-
-                catdf = catdf.append(unknown_cats)
-                catdf["id_category"]
-                DBManager.store_data("categories_data", catdf)
-
             table_df = DBManager.retrieve_data("products_data")
             table_df = table_df.append(import_df, ignore_index=False)
 
@@ -250,13 +240,16 @@ class StatsFrame(tk.Frame):
     def show(self):
         f = self.get_plot_data()
         if f:
-            self.plt_redraw(f)
+            self.plt_show(f)
             self.tkraise()
             return True
 
         tkMessageBox.showinfo(title="No Data",
                               message="There are no statistics because there is no data loaded. Load data to view statistics tab.")
         return False
+
+    def hide(self):
+        pass
 
     def plt_show(self, f):
         """Method to add the matplotlib graph onto a tkinter window."""
@@ -303,9 +296,31 @@ class StatsFrame(tk.Frame):
         return fig
 
 
-def merge_dfs(df1, df2, how="outer"):
-    """ Forgot to make docstring, so don't know what the purpose of this functions is... """
-    out_df = pd.merge(df1, df2, how=how, indicator="shared")
+def update_categories(df):
+    if "category" not in df:
+        return
+
+    if DBManager.isdataset("categories_data"):
+        catdf = DBManager.retrieve_data("categories_data")
+    else:
+        catdf = DBManager.get_dbdata("categories")
+
+    unknown_cats = df[~df["category"].isin(
+        catdf["title"])]["category"].to_frame().drop_duplicates()
+
+    unknown_cats.rename(columns={"category": "title"}, inplace=True)
+
+    if not unknown_cats.empty:
+        unknown_cats["id_category"] = np.nan
+
+        catdf = catdf.append(unknown_cats)
+        catdf["id_category"]
+        DBManager.store_data("categories_data", catdf)
+
+
+def merge_dfs(df1, df2):
+    out_df = pd.merge(df1, df2, how="outer")
+    return out_df
 
 
 if __name__ == "__main__":

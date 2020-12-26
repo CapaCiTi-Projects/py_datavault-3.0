@@ -217,6 +217,7 @@ class DBManager(object):
         """Update data in the `_conf` dictionary"""
         if key in DBManager._config:
             DBManager._config[key] = data
+        else:
             raise KeyError(f"{key} does not exist in `tables`")
 
     @ staticmethod
@@ -338,7 +339,6 @@ class DBManager(object):
 
                     sql_insert = (f"INSERT INTO `{db_table}` (`" + cols_insert +
                                   "`) VALUES (" + "%s," * (len(row.index)-1) + "%s)")
-                    print(tuple(row))
                     cursor.execute(sql_insert, tuple(row))
             if len(df_delete) > 0:
                 cursor.executemany(sql_delete, df_delete)
